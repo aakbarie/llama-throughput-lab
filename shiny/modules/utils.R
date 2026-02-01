@@ -435,6 +435,7 @@ extract_token_count <- function(response) {
   if (!is.null(timings)) {
     for (key in timing_keys) {
       if (!is.null(timings[[key]])) {
+
         return(as.integer(timings[[key]]))
       }
     }
@@ -442,7 +443,9 @@ extract_token_count <- function(response) {
 
   for (key in timing_keys) {
     if (!is.null(response[[key]])) {
+
       return(as.integer(response[[key]]))
+
     }
   }
 
@@ -463,6 +466,7 @@ extract_token_count <- function(response) {
 #' @return Named list with timing info
 extract_timing <- function(response) {
   if (!is.null(response$timings)) {
+
     prompt_eval_time <- as.numeric(response$timings$prompt_eval_time_ms)
     generation_time <- as.numeric(response$timings$predicted_time_ms)
     tokens_per_second <- as.numeric(response$timings$predicted_per_second)
@@ -482,6 +486,7 @@ extract_timing <- function(response) {
     return(list(
       prompt_eval_time = if (is.na(prompt_eval_time)) NA_real_ else prompt_eval_time / 1000,
       generation_time = if (is.na(generation_time)) NA_real_ else generation_time / 1000,
+
       tokens_per_second = tokens_per_second
     ))
   }
