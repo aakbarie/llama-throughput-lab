@@ -435,19 +435,22 @@ extract_token_count <- function(response) {
   if (!is.null(timings)) {
     for (key in timing_keys) {
       if (!is.null(timings[[key]])) {
-        return(timings[[key]])
+
+        return(as.integer(timings[[key]]))
       }
     }
   }
 
   for (key in timing_keys) {
     if (!is.null(response[[key]])) {
-      return(response[[key]])
+
+      return(as.integer(response[[key]]))
+
     }
   }
 
   if (!is.null(response$usage$completion_tokens)) {
-    return(response$usage$completion_tokens)
+    return(as.integer(response$usage$completion_tokens))
   }
 
   if (!is.null(response$content)) {
@@ -463,19 +466,27 @@ extract_token_count <- function(response) {
 #' @return Named list with timing info
 extract_timing <- function(response) {
   if (!is.null(response$timings)) {
-    tokens_per_second <- response$timings$predicted_per_second
 
-    if (is.null(tokens_per_second) &&
-        !is.null(response$timings$predicted_n) &&
-        !is.null(response$timings$predicted_ms) &&
-        response$timings$predicted_ms > 0) {
-      tokens_per_second <- response$timings$predicted_n /
-        (response$timings$predicted_ms / 1000)
+    prompt_eval_time <- as.numeric(response$timings$prompt_eval_time_ms)
+    generation_time <- as.numeric(response$timings$predicted_time_ms)
+    tokens_per_second <- as.numeric(response$timings$predicted_per_second)
+
+    if (is.na(tokens_per_second) || is.null(tokens_per_second)) {
+      predicted_n <- as.numeric(response$timings$predicted_n)
+      predicted_ms <- as.numeric(response$timings$predicted_ms)
+      if (!is.na(predicted_n) &&
+          !is.na(predicted_ms) &&
+          predicted_ms > 0) {
+        tokens_per_second <- predicted_n / (predicted_ms / 1000)
+      } else {
+        tokens_per_second <- NA_real_
+      }
     }
 
     return(list(
-      prompt_eval_time = response$timings$prompt_eval_time_ms / 1000,
-      generation_time = response$timings$predicted_time_ms / 1000,
+      prompt_eval_time = if (is.na(prompt_eval_time)) NA_real_ else prompt_eval_time / 1000,
+      generation_time = if (is.na(generation_time)) NA_real_ else generation_time / 1000,
+
       tokens_per_second = tokens_per_second
     ))
   }
