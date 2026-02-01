@@ -429,12 +429,27 @@ create_completion_body <- function(prompt, n_predict = 50, temperature = 0.7) {
 #' @return Number of tokens generated
 extract_token_count <- function(response) {
   # Try different response formats
-  if (!is.null(response$tokens_predicted)) {
-    return(response$tokens_predicted)
+  timings <- response$timings
+  timing_keys <- c("predicted_n", "tokens_predicted", "completion_tokens")
+
+  if (!is.null(timings)) {
+    for (key in timing_keys) {
+      if (!is.null(timings[[key]])) {
+        return(as.integer(timings[[key]]))
+      }
+    }
   }
+
+  for (key in timing_keys) {
+    if (!is.null(response[[key]])) {
+      return(as.integer(response[[key]]))
+    }
+  }
+
   if (!is.null(response$usage$completion_tokens)) {
-    return(response$usage$completion_tokens)
+    return(as.integer(response$usage$completion_tokens))
   }
+
   if (!is.null(response$content)) {
     # Estimate from content length
     return(length(unlist(strsplit(response$content, "\\s+"))))
@@ -448,10 +463,26 @@ extract_token_count <- function(response) {
 #' @return Named list with timing info
 extract_timing <- function(response) {
   if (!is.null(response$timings)) {
+    prompt_eval_time <- as.numeric(response$timings$prompt_eval_time_ms)
+    generation_time <- as.numeric(response$timings$predicted_time_ms)
+    tokens_per_second <- as.numeric(response$timings$predicted_per_second)
+
+    if (is.na(tokens_per_second) || is.null(tokens_per_second)) {
+      predicted_n <- as.numeric(response$timings$predicted_n)
+      predicted_ms <- as.numeric(response$timings$predicted_ms)
+      if (!is.na(predicted_n) &&
+          !is.na(predicted_ms) &&
+          predicted_ms > 0) {
+        tokens_per_second <- predicted_n / (predicted_ms / 1000)
+      } else {
+        tokens_per_second <- NA_real_
+      }
+    }
+
     return(list(
-      prompt_eval_time = response$timings$prompt_eval_time_ms / 1000,
-      generation_time = response$timings$predicted_time_ms / 1000,
-      tokens_per_second = response$timings$predicted_per_second
+      prompt_eval_time = if (is.na(prompt_eval_time)) NA_real_ else prompt_eval_time / 1000,
+      generation_time = if (is.na(generation_time)) NA_real_ else generation_time / 1000,
+      tokens_per_second = tokens_per_second
     ))
   }
 
