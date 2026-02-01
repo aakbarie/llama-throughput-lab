@@ -258,7 +258,18 @@ check_http <- function(host, port, path = "/health", timeout = 5) {
 
   tryCatch({
     response <- httr::GET(url, httr::timeout(timeout))
-    httr::status_code(response) == 200
+    status <- httr::status_code(response)
+    if (status == 200) {
+      return(TRUE)
+    }
+
+    if (status == 404 && path == "/health") {
+      fallback_url <- paste0("http://", host, ":", port, "/v1/models")
+      fallback_response <- httr::GET(fallback_url, httr::timeout(timeout))
+      return(httr::status_code(fallback_response) == 200)
+    }
+
+    FALSE
   }, error = function(e) FALSE)
 }
 
