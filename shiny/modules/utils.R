@@ -429,12 +429,27 @@ create_completion_body <- function(prompt, n_predict = 50, temperature = 0.7) {
 #' @return Number of tokens generated
 extract_token_count <- function(response) {
   # Try different response formats
-  if (!is.null(response$tokens_predicted)) {
-    return(response$tokens_predicted)
+  timings <- response$timings
+  timing_keys <- c("predicted_n", "tokens_predicted", "completion_tokens")
+
+  if (!is.null(timings)) {
+    for (key in timing_keys) {
+      if (!is.null(timings[[key]])) {
+        return(timings[[key]])
+      }
+    }
   }
+
+  for (key in timing_keys) {
+    if (!is.null(response[[key]])) {
+      return(response[[key]])
+    }
+  }
+
   if (!is.null(response$usage$completion_tokens)) {
     return(response$usage$completion_tokens)
   }
+
   if (!is.null(response$content)) {
     # Estimate from content length
     return(length(unlist(strsplit(response$content, "\\s+"))))
@@ -448,10 +463,20 @@ extract_token_count <- function(response) {
 #' @return Named list with timing info
 extract_timing <- function(response) {
   if (!is.null(response$timings)) {
+    tokens_per_second <- response$timings$predicted_per_second
+
+    if (is.null(tokens_per_second) &&
+        !is.null(response$timings$predicted_n) &&
+        !is.null(response$timings$predicted_ms) &&
+        response$timings$predicted_ms > 0) {
+      tokens_per_second <- response$timings$predicted_n /
+        (response$timings$predicted_ms / 1000)
+    }
+
     return(list(
       prompt_eval_time = response$timings$prompt_eval_time_ms / 1000,
       generation_time = response$timings$predicted_time_ms / 1000,
-      tokens_per_second = response$timings$predicted_per_second
+      tokens_per_second = tokens_per_second
     ))
   }
 
