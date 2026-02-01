@@ -1,0 +1,18 @@
+Title: Llama Throughput Lab
+Description: A benchmarking and testing framework for llama.cpp inference servers
+Version: 1.0.0
+Author: Llama Throughput Lab
+Depends:
+    R (>= 4.0.0)
+Imports:
+    shiny (>= 1.8.0),
+    bslib (>= 0.6.0),
+    DT (>= 0.31),
+    ggplot2 (>= 3.4.0),
+    jsonlite (>= 1.8.0),
+    httr (>= 1.4.0),
+    future (>= 1.33.0),
+    future.apply (>= 1.11.0),
+    promises (>= 1.2.0)
+Suggests:
+    processx (>= 3.8.0)
