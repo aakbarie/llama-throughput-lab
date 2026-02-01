@@ -25,6 +25,7 @@
 run_sweep <- function(sweep_type,
                       base_url,
                       prompt,
+                      model = NULL,
                       batch_list = c(512, 1024, 2048),
                       ubatch_list = c(256, 512),
                       tokens_list = c(50, 100, 200),
@@ -45,6 +46,7 @@ run_sweep <- function(sweep_type,
     "threads" = run_threads_sweep(
       base_url = base_url,
       prompt = prompt,
+      model = model,
       tokens = tokens_list[1],
       concurrency = concurrency_list[1],
       threads_list = threads_list,
@@ -60,6 +62,7 @@ run_sweep <- function(sweep_type,
     "round_robin" = run_round_robin_sweep(
       base_url = base_url,
       prompt = prompt,
+      model = model,
       batch_list = batch_list,
       ubatch_list = ubatch_list,
       tokens_list = tokens_list,
@@ -76,6 +79,7 @@ run_sweep <- function(sweep_type,
     "full" = run_full_sweep(
       base_url = base_url,
       prompt = prompt,
+      model = model,
       instances_list = instances_list,
       parallel_list = parallel_list,
       batch_list = batch_list,
@@ -102,6 +106,7 @@ run_sweep <- function(sweep_type,
 #'         throughput_tps, total_tokens, elapsed_s, errors
 run_round_robin_sweep <- function(base_url,
                                    prompt,
+                                   model = NULL,
                                    batch_list,
                                    ubatch_list,
                                    tokens_list,
@@ -159,6 +164,7 @@ run_round_robin_sweep <- function(base_url,
               base_url = base_url,
               prompt = prompt,
               n_predict = max_tokens,
+              model = model,
               concurrency = concurrency,
               num_requests = num_requests,
               timeout = timeout,
@@ -206,6 +212,11 @@ run_round_robin_sweep <- function(base_url,
   attr(results, "best_config") <- best_config
   attr(results, "best_throughput") <- best_throughput
 
+  # Also capture total_tokens if missing
+  if (!"total_tokens" %in% names(results)) {
+    results$total_tokens <- results$throughput_tps * results$elapsed_s
+  }
+
   results
 }
 
@@ -214,6 +225,7 @@ run_round_robin_sweep <- function(base_url,
 #'         total_tokens, elapsed_s, errors
 run_threads_sweep <- function(base_url,
                                prompt,
+                               model = NULL,
                                tokens = 50,
                                concurrency = 4,
                                threads_list,
@@ -303,6 +315,7 @@ run_threads_sweep <- function(base_url,
           base_url = base_url,
           prompt = prompt,
           n_predict = tokens,
+          model = model,
           concurrency = concurrency,
           num_requests = num_requests,
           timeout = timeout,
@@ -352,6 +365,7 @@ run_threads_sweep <- function(base_url,
 #'         concurrency, throughput_tps, total_tokens, elapsed_s, errors
 run_full_sweep <- function(base_url,
                             prompt,
+                            model = NULL,
                             instances_list,
                             parallel_list,
                             batch_list,
@@ -475,6 +489,7 @@ run_full_sweep <- function(base_url,
                 base_url = base_url,
                 prompt = prompt,
                 n_predict = tokens,
+                model = model,
                 concurrency = concurrency,
                 num_requests = num_requests,
                 timeout = timeout,

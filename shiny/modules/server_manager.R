@@ -34,7 +34,7 @@ start_llama_server <- function(server_bin,
 
   # Build command
   cmd_args <- c(
-    "-m", shQuote(model_path),
+    "-m", model_path,
     "--host", host,
     "--port", as.character(port),
     "-c", as.character(ctx_size),
@@ -54,6 +54,7 @@ if (!is.null(batch) && batch != "default") {
   # Extra args
   if (extra_args != "") {
     extra <- unlist(strsplit(extra_args, "\\s+"))
+    extra <- extra[extra != ""]
     cmd_args <- c(cmd_args, extra)
   }
 
@@ -65,40 +66,37 @@ if (!is.null(batch) && batch != "default") {
 
   # Start process
   tryCatch({
-    # Use system2 with wait=FALSE for background process
-    # This returns the command string, we need processx for proper PID handling
-
-    # Create a wrapper script to get PID
-    cmd <- paste(c(shQuote(server_bin), cmd_args), collapse = " ")
-    full_cmd <- paste(cmd, ">", shQuote(log_file), "2>&1 &")
-
-    # Execute and capture PID
-    pid_cmd <- paste("(", full_cmd, ") && echo $!")
-
-    # Alternative: use processx if available
     if (requireNamespace("processx", quietly = TRUE)) {
+      # processx handles argument escaping; pass raw args to avoid quoting issues
       proc <- processx::process$new(
         command = server_bin,
         args = cmd_args,
         stdout = log_file,
-        stderr = "2>&1",
+        stderr = log_file,
         cleanup = FALSE
       )
-      pid <- proc$get_pid()
+      pid_val <- as.integer(proc$get_pid()[1])
     } else {
-      # Fallback: use shell
-      system(full_cmd, wait = FALSE)
+      # system2 also accepts raw args and can background the process
+      system2(
+        command = server_bin,
+        args = cmd_args,
+        stdout = log_file,
+        stderr = log_file,
+        wait = FALSE
+      )
 
       # Try to find the PID by searching for the process
       Sys.sleep(0.5)
-      ps_result <- system2("pgrep", c("-f", shQuote(paste0("llama-server.*", port))),
+      pattern <- paste0(basename(server_bin), ".*", port)
+      ps_result <- system2("pgrep", c("-f", pattern),
                            stdout = TRUE, stderr = FALSE)
-      pid <- if (length(ps_result) > 0) as.integer(ps_result[1]) else NA
+      pid_val <- if (length(ps_result) > 0 && nzchar(ps_result[1])) as.integer(ps_result[1]) else NA
     }
 
     list(
       success = TRUE,
-      pid = pid,
+      pid = pid_val,
       port = port,
       log_file = log_file,
       error = NULL
@@ -119,33 +117,45 @@ if (!is.null(batch) && batch != "default") {
 #' @param timeout Timeout in seconds before force kill
 #' @return TRUE if stopped successfully
 stop_process <- function(pid, timeout = 5) {
-  if (is.na(pid)) return(TRUE)
+  if (length(pid) == 0) return(TRUE)
+  pid <- pid[!is.na(pid)]
+  if (length(pid) == 0) return(TRUE)
 
-  tryCatch({
-    # Try graceful termination first
-    tools::pskill(pid, signal = 15)  # SIGTERM
+  for (p in pid) {
+    p_int <- suppressWarnings(as.integer(p))
+    if (is.na(p_int)) next
 
-    # Wait for process to exit
-    start_time <- Sys.time()
-    while (difftime(Sys.time(), start_time, units = "secs") < timeout) {
-      # Check if process still exists
-      result <- system2("kill", c("-0", as.character(pid)),
-                        stdout = FALSE, stderr = FALSE)
-      if (result != 0) {
-        return(TRUE)  # Process is gone
+    tryCatch({
+      # Try graceful termination first
+      tools::pskill(p_int, signal = 15)  # SIGTERM
+
+      # Wait for process to exit
+      start_time <- Sys.time()
+      while (difftime(Sys.time(), start_time, units = "secs") < timeout) {
+        # Check if process still exists
+        result <- system2("kill", c("-0", as.character(p_int)),
+                          stdout = FALSE, stderr = FALSE)
+        if (result != 0) {
+          break  # Process is gone
+        }
+        Sys.sleep(0.5)
       }
-      Sys.sleep(0.5)
-    }
 
-    # Force kill if still running
-    tools::pskill(pid, signal = 9)  # SIGKILL
-    Sys.sleep(0.5)
+      # Force kill if still running
+      result <- system2("kill", c("-0", as.character(p_int)),
+                        stdout = FALSE, stderr = FALSE)
+      if (result == 0) {
+        tools::pskill(p_int, signal = 9)  # SIGKILL
+        Sys.sleep(0.5)
+      }
 
-    TRUE
-  }, error = function(e) {
-    # Process might already be gone
-    TRUE
-  })
+    }, error = function(e) {
+      # Process might already be gone; ignore
+      TRUE
+    })
+  }
+
+  TRUE
 }
 
 #' Generate nginx configuration for round-robin load balancing

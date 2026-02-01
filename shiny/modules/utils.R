@@ -460,6 +460,37 @@ extract_token_count <- function(response) {
     }
   }
 
+  # OpenAI /chat or /completions compatible response
+  if (!is.null(response$usage$completion_tokens)) {
+    return(as.integer(response$usage$completion_tokens))
+  }
+
+  # Newer llama.cpp can return raw token ids
+  if (!is.null(response$tokens) && is.atomic(response$tokens)) {
+    return(length(response$tokens))
+  }
+
+  # Extract from choices (chat or text completions)
+  if (!is.null(response$choices) && length(response$choices) > 0) {
+    # Prefer usage if present, otherwise estimate from text length
+    choice <- response$choices[[1]]
+
+    # chat format
+    if (!is.null(choice$message$content)) {
+      txt <- choice$message$content
+    } else if (!is.null(choice$text)) { # text completion format
+      txt <- choice$text
+    } else if (!is.null(choice$content)) { # llama.cpp legacy "content"
+      txt <- choice$content
+    } else {
+      txt <- ""
+    }
+
+    if (!is.null(txt) && nzchar(txt)) {
+      return(length(unlist(strsplit(txt, "\\s+"))))
+    }
+  }
+
   if (!is.null(response$usage$completion_tokens)) {
     return(as.integer(response$usage$completion_tokens))
   }
@@ -478,13 +509,21 @@ extract_token_count <- function(response) {
 extract_timing <- function(response) {
   if (!is.null(response$timings)) {
 
-    prompt_eval_time <- as.numeric(response$timings$prompt_eval_time_ms)
-    generation_time <- as.numeric(response$timings$predicted_time_ms)
-    tokens_per_second <- as.numeric(response$timings$predicted_per_second)
+    t <- response$timings
+    # Support multiple field names from different llama.cpp versions
+    prompt_eval_time <- as.numeric(
+      if (!is.null(t$prompt_eval_time_ms)) t$prompt_eval_time_ms else t$prompt_ms
+    )
+    generation_time <- as.numeric(
+      if (!is.null(t$predicted_time_ms)) t$predicted_time_ms else t$predicted_ms
+    )
+    tokens_per_second <- as.numeric(
+      if (!is.null(t$predicted_per_second)) t$predicted_per_second else t$tokens_per_second
+    )
 
-    if (is.na(tokens_per_second) || is.null(tokens_per_second)) {
-      predicted_n <- as.numeric(response$timings$predicted_n)
-      predicted_ms <- as.numeric(response$timings$predicted_ms)
+    if (is.null(tokens_per_second) || length(tokens_per_second) == 0 || is.na(tokens_per_second)) {
+      predicted_n <- as.numeric(t$predicted_n)
+      predicted_ms <- as.numeric(if (!is.null(t$predicted_ms)) t$predicted_ms else t$predicted_time_ms)
       if (!is.na(predicted_n) &&
           !is.na(predicted_ms) &&
           predicted_ms > 0) {
@@ -495,10 +534,28 @@ extract_timing <- function(response) {
     }
 
     return(list(
-      prompt_eval_time = if (is.na(prompt_eval_time)) NA_real_ else prompt_eval_time / 1000,
-      generation_time = if (is.na(generation_time)) NA_real_ else generation_time / 1000,
+      prompt_eval_time = if (is.null(prompt_eval_time) || length(prompt_eval_time) == 0 || is.na(prompt_eval_time)) NA_real_ else prompt_eval_time / 1000,
+      generation_time = if (is.null(generation_time) || length(generation_time) == 0 || is.na(generation_time)) NA_real_ else generation_time / 1000,
 
       tokens_per_second = tokens_per_second
+    ))
+  }
+
+  # OpenAI compatible responses may only include usage; approximate tps if duration present
+  if (!is.null(response$usage$completion_tokens)) {
+    gen_tokens <- as.numeric(response$usage$completion_tokens)
+    # Some builds include duration_ms or eval_count; try to derive
+    if (!is.null(response$duration_ms)) {
+      dur_s <- as.numeric(response$duration_ms) / 1000
+      tps <- if (!is.na(dur_s) && dur_s > 0) gen_tokens / dur_s else NA_real_
+    } else {
+      tps <- NA_real_
+    }
+
+    return(list(
+      prompt_eval_time = NA,
+      generation_time = NA,
+      tokens_per_second = tps
     ))
   }
 

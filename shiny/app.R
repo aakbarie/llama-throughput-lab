@@ -685,6 +685,33 @@ server <- function(input, output, session) {
     }
   })
 
+  output$result_comparison_plot <- renderPlot({
+    req(result_data())
+    df <- result_data()
+    validate(need(nrow(df) > 0, "No data loaded. Select a result file or run a test/benchmark."))
+
+    if (all(c("concurrency", "throughput_tps") %in% names(df))) {
+      ggplot(df, aes(x = factor(concurrency), y = throughput_tps)) +
+        geom_boxplot(fill = "#22c55e", alpha = 0.65) +
+        geom_jitter(width = 0.2, alpha = 0.4) +
+        labs(
+          title = "Throughput vs Concurrency",
+          x = "Concurrency",
+          y = "Throughput (tokens/sec)"
+        ) +
+        theme_minimal() +
+        theme(
+          plot.background = element_rect(fill = "#1e1e2e", color = NA),
+          panel.background = element_rect(fill = "#1e1e2e", color = NA),
+          text = element_text(color = "white"),
+          axis.text = element_text(color = "white"),
+          panel.grid = element_line(color = "#333")
+        )
+    } else {
+      validate(need(FALSE, "Data needs concurrency and throughput_tps columns"))
+    }
+  })
+
   # Handle manual path entry
   observeEvent(input$model_path, {
     path <- input$model_path
@@ -941,6 +968,7 @@ server <- function(input, output, session) {
 
     add_log(paste("Starting", input$test_type, "test..."))
     add_log(paste("Target:", base_url))
+    model_name <- if (!is.null(input$model_path) && nzchar(input$model_path)) basename(input$model_path) else NULL
 
     # Run test based on type
     result <- switch(input$test_type,
@@ -949,7 +977,8 @@ server <- function(input, output, session) {
         prompt = input$prompt,
         n_predict = input$n_predict,
         temperature = input$temperature,
-        timeout = input$request_timeout
+        timeout = input$request_timeout,
+        model = model_name
       ),
       "concurrent" = run_concurrent_test(
         base_url = base_url,
@@ -958,7 +987,8 @@ server <- function(input, output, session) {
         temperature = input$temperature,
         concurrency = input$concurrency,
         num_requests = input$num_requests,
-        timeout = input$request_timeout
+        timeout = input$request_timeout,
+        model = model_name
       ),
       "round_robin" = run_concurrent_test(
         base_url = base_url,
@@ -967,7 +997,8 @@ server <- function(input, output, session) {
         temperature = input$temperature,
         concurrency = input$concurrency,
         num_requests = input$num_requests,
-        timeout = input$request_timeout
+        timeout = input$request_timeout,
+        model = model_name
       )
     )
 
@@ -976,6 +1007,35 @@ server <- function(input, output, session) {
     rv$throughput <- result$throughput
     rv$elapsed <- result$elapsed
     rv$errors <- result$errors
+
+    # Persist test result for visualization/analysis
+    test_df <- data.frame(
+      test_type = input$test_type,
+      throughput_tps = result$throughput,
+      total_tokens = result$tokens,
+      elapsed_s = result$elapsed,
+      errors = result$errors,
+      concurrency = if (input$test_type == "single") 1 else input$concurrency,
+      max_tokens = input$n_predict,
+      instances = input$instances,
+      parallel = input$parallel,
+      batch = NA,
+      ubatch = NA,
+      stringsAsFactors = FALSE
+    )
+
+    # Save to results/tests for later viewing
+    tests_dir <- file.path(input$results_dir, "tests")
+    if (!dir.exists(tests_dir)) dir.create(tests_dir, recursive = TRUE)
+    test_file <- file.path(tests_dir, paste0("test_", timestamp_string(), ".csv"))
+    write.csv(test_df, test_file, row.names = FALSE)
+
+    # Update in-memory data for plots/analysis
+    rv$current_results <- test_df
+    analysis_data(test_df)
+    rv$result_files <- list_result_files(input$results_dir)
+    updateSelectInput(session, "result_file", choices = rv$result_files)
+    updateSelectInput(session, "analysis_file", choices = rv$result_files)
 
     add_log(paste("Completed:", result$tokens, "tokens in",
                   sprintf("%.2fs", result$elapsed)))
@@ -1046,6 +1106,7 @@ server <- function(input, output, session) {
     rv$sweep_running <- TRUE
     rv$current_results <- NULL
     rv$sweep_progress <- 0
+    model_name <- if (!is.null(input$model_path) && nzchar(input$model_path)) basename(input$model_path) else NULL
 
     # Parse parameters
     batch_list <- parse_list(input$batch_list)
@@ -1078,6 +1139,7 @@ server <- function(input, output, session) {
       sweep_type = input$sweep_type,
       base_url = base_url,
       prompt = input$prompt,
+      model = model_name,
       batch_list = batch_list,
       ubatch_list = ubatch_list,
       tokens_list = tokens_list,
@@ -1135,6 +1197,7 @@ server <- function(input, output, session) {
 
   output$sweep_throughput_plot <- renderPlot({
     req(rv$current_results)
+    validate(need(nrow(rv$current_results) > 0, "No sweep data yet. Run a sweep to see throughput."))
 
     df <- rv$current_results
 
@@ -1160,6 +1223,7 @@ server <- function(input, output, session) {
 
   output$sweep_heatmap <- renderPlot({
     req(rv$current_results)
+    validate(need(nrow(rv$current_results) > 0, "No sweep data yet. Run a sweep to see heatmap."))
 
     df <- rv$current_results
 
@@ -1211,7 +1275,21 @@ server <- function(input, output, session) {
   }) |> bindEvent(input$refresh_results, TRUE)
 
   observe({
-    updateSelectInput(session, "result_file", choices = rv$result_files)
+    updateSelectInput(session, "result_file",
+                      choices = rv$result_files,
+                      selected = if (length(rv$result_files) > 0) rv$result_files[[1]] else NULL)
+    updateSelectInput(session, "analysis_file",
+                      choices = rv$result_files,
+                      selected = if (length(rv$result_files) > 0) rv$result_files[[1]] else NULL)
+  })
+
+  # Auto-load selected result into analysis view for immediate charts
+  observeEvent(input$result_file, {
+    path <- file.path(input$results_dir, input$result_file)
+    if (!is.null(input$result_file) && nzchar(input$result_file) && file.exists(path)) {
+      df <- read.csv(path)
+      analysis_data(df)
+    }
   })
 
   result_data <- reactive({
@@ -1236,6 +1314,7 @@ server <- function(input, output, session) {
   output$result_throughput_plot <- renderPlot({
     req(result_data())
     df <- result_data()
+    validate(need(nrow(df) > 0, "No data loaded. Select a result file or run a test/benchmark."))
 
     if ("throughput_tps" %in% names(df)) {
       df$config <- paste0("C", seq_len(nrow(df)))
@@ -1387,6 +1466,7 @@ server <- function(input, output, session) {
       showNotification(paste("Server binary not found:", input$server_bin), type = "error", duration = 5)
       return()
     }
+    model_name <- if (!is.null(input$model_path) && nzchar(input$model_path)) basename(input$model_path) else NULL
 
     # Start server if not running
     if (nrow(rv$servers) == 0) {
@@ -1424,7 +1504,7 @@ server <- function(input, output, session) {
         # Wait up to 60 seconds for server
         ready <- wait_for_ready(
           paste0("http://", input$server_host, ":", input$base_port),
-          timeout = 60
+          timeout = 3600
         )
 
         if (ready) {
@@ -1441,7 +1521,8 @@ server <- function(input, output, session) {
             prompt = input$prompt,
             n_predict = input$n_predict,
             temperature = input$temperature,
-            timeout = input$request_timeout
+            timeout = input$request_timeout,
+            model = model_name
           )
 
           rv$progress_percent <- 100
@@ -1481,7 +1562,8 @@ server <- function(input, output, session) {
         prompt = input$prompt,
         n_predict = input$n_predict,
         temperature = input$temperature,
-        timeout = input$request_timeout
+        timeout = input$request_timeout,
+        model = model_name
       )
 
       rv$progress_percent <- 100
@@ -1490,6 +1572,31 @@ server <- function(input, output, session) {
       rv$throughput <- test_result$throughput
       rv$elapsed <- test_result$elapsed
       rv$errors <- test_result$errors
+
+      # Persist result
+      qs_df <- data.frame(
+        test_type = "quick_single",
+        throughput_tps = test_result$throughput,
+        total_tokens = test_result$tokens,
+        elapsed_s = test_result$elapsed,
+        errors = test_result$errors,
+        concurrency = 1,
+        max_tokens = input$n_predict,
+        instances = input$instances,
+        parallel = input$parallel,
+        batch = NA,
+        ubatch = NA,
+        stringsAsFactors = FALSE
+      )
+      tests_dir <- file.path(input$results_dir, "tests")
+      if (!dir.exists(tests_dir)) dir.create(tests_dir, recursive = TRUE)
+      test_file <- file.path(tests_dir, paste0("test_", timestamp_string(), ".csv"))
+      write.csv(qs_df, test_file, row.names = FALSE)
+      rv$current_results <- qs_df
+      analysis_data(qs_df)
+      rv$result_files <- list_result_files(input$results_dir)
+      updateSelectInput(session, "result_file", choices = rv$result_files)
+      updateSelectInput(session, "analysis_file", choices = rv$result_files)
       rv$test_running <- FALSE
 
       showNotification(
@@ -1506,6 +1613,7 @@ server <- function(input, output, session) {
       showNotification("No server running! Click 'Start Server & Run Test' first.", type = "warning", duration = 5)
       return()
     }
+    model_name <- if (!is.null(input$model_path) && nzchar(input$model_path)) basename(input$model_path) else NULL
 
     rv$test_running <- TRUE
     rv$progress_status <- "Running benchmark (8 requests, 4 concurrent)..."
@@ -1525,7 +1633,8 @@ server <- function(input, output, session) {
       temperature = input$temperature,
       concurrency = 4,
       num_requests = 8,
-      timeout = input$request_timeout
+      timeout = input$request_timeout,
+      model = model_name
     )
 
     rv$progress_percent <- 100
@@ -1535,6 +1644,30 @@ server <- function(input, output, session) {
     rv$elapsed <- test_result$elapsed
     rv$errors <- test_result$errors
     rv$test_running <- FALSE
+
+    bm_df <- data.frame(
+      test_type = "quick_benchmark",
+      throughput_tps = test_result$throughput,
+      total_tokens = test_result$tokens,
+      elapsed_s = test_result$elapsed,
+      errors = test_result$errors,
+      concurrency = 4,
+      max_tokens = input$n_predict,
+      instances = input$instances,
+      parallel = input$parallel,
+      batch = NA,
+      ubatch = NA,
+      stringsAsFactors = FALSE
+    )
+    tests_dir <- file.path(input$results_dir, "tests")
+    if (!dir.exists(tests_dir)) dir.create(tests_dir, recursive = TRUE)
+    test_file <- file.path(tests_dir, paste0("test_", timestamp_string(), ".csv"))
+    write.csv(bm_df, test_file, row.names = FALSE)
+    rv$current_results <- bm_df
+    analysis_data(bm_df)
+    rv$result_files <- list_result_files(input$results_dir)
+    updateSelectInput(session, "result_file", choices = rv$result_files)
+    updateSelectInput(session, "analysis_file", choices = rv$result_files)
 
     showNotification(
       paste("Benchmark complete!", round(test_result$throughput, 2), "tok/s"),
@@ -1664,6 +1797,7 @@ server <- function(input, output, session) {
   output$analysis_correlation <- renderPlot({
     req(analysis_data())
     df <- analysis_data()
+    validate(need(nrow(df) > 0, "Load a results file to see analysis."))
 
     # Select numeric columns
     numeric_cols <- sapply(df, is.numeric)
@@ -1699,6 +1833,7 @@ server <- function(input, output, session) {
   output$analysis_trend <- renderPlot({
     req(analysis_data(), length(input$group_vars) > 0)
     df <- analysis_data()
+    validate(need(nrow(df) > 0, "Load a results file to see analysis."))
     metric <- input$analysis_metric
     group_var <- input$group_vars[1]
 
@@ -1730,6 +1865,7 @@ server <- function(input, output, session) {
   output$analysis_top_configs <- renderDT({
     req(analysis_data())
     df <- analysis_data()
+    validate(need(nrow(df) > 0, "Load a results file to see analysis."))
     metric <- input$analysis_metric
 
     if (metric %in% names(df)) {
@@ -1750,6 +1886,7 @@ server <- function(input, output, session) {
   output$analysis_summary <- renderText({
     req(analysis_data())
     df <- analysis_data()
+    if (nrow(df) == 0) return("No data loaded. Click Load Data.")
     metric <- input$analysis_metric
 
     if (metric %in% names(df)) {
@@ -1787,6 +1924,7 @@ server <- function(input, output, session) {
   output$analysis_best_config <- renderText({
     req(analysis_data())
     df <- analysis_data()
+    if (nrow(df) == 0) return("No data loaded. Click Load Data.")
     metric <- input$analysis_metric
 
     if (metric %in% names(df)) {

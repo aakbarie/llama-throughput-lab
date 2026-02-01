@@ -1,73 +1,122 @@
 # Test Runner Module for Llama Throughput Lab
 # Handles single, concurrent, and round-robin test execution
 
-#' Send a completion request to the server
+#' Send a completion request to the server (with endpoint fallbacks)
 #' @param base_url Base URL of the server
 #' @param prompt Input prompt
 #' @param n_predict Tokens to generate
 #' @param temperature Sampling temperature
 #' @param timeout Request timeout in seconds
-#' @return List with success, tokens, elapsed, response, error
+#' @param model Optional model name (for OpenAI-style endpoints)
+#' @return List with success, tokens, elapsed, response, error, endpoint
 send_completion_request <- function(base_url,
                                      prompt,
                                      n_predict = 50,
                                      temperature = 0.7,
-                                     timeout = 120) {
-  url <- paste0(base_url, "/completion")
+                                     timeout = 120,
+                                     model = NULL) {
+  # Try legacy and OpenAI-compatible endpoints in order
+  endpoints <- c("/completion", "/v1/completions", "/v1/chat/completions")
+  last_error <- NULL
 
-  body <- list(
-    prompt = prompt,
-    n_predict = n_predict,
-    temperature = temperature,
-    stream = FALSE
-  )
+  for (path in endpoints) {
+    url <- paste0(base_url, path)
 
-  start_time <- Sys.time()
-
-  tryCatch({
-    response <- httr::POST(
-      url,
-      body = jsonlite::toJSON(body, auto_unbox = TRUE),
-      httr::content_type_json(),
-      httr::timeout(timeout)
+    # Build request body appropriate for the endpoint
+    body <- switch(path,
+      "/completion" = list(
+        prompt = prompt,
+        n_predict = n_predict,
+        temperature = temperature,
+        stream = FALSE
+      ),
+      "/v1/completions" = {
+        b <- list(
+          prompt = prompt,
+          max_tokens = n_predict,
+          temperature = temperature,
+          stream = FALSE
+        )
+        if (!is.null(model)) b$model <- model
+        b
+      },
+      "/v1/chat/completions" = {
+        b <- list(
+          messages = list(list(role = "user", content = prompt)),
+          max_tokens = n_predict,
+          temperature = temperature,
+          stream = FALSE
+        )
+        if (!is.null(model)) b$model <- model
+        b
+      }
     )
 
-    elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+    start_time <- Sys.time()
 
-    if (httr::status_code(response) == 200) {
-      content <- httr::content(response, as = "parsed", type = "application/json")
-      tokens <- extract_token_count(content)
-      timing <- extract_timing(content)
-
-      list(
-        success = TRUE,
-        tokens = tokens,
-        elapsed = elapsed,
-        tokens_per_second = timing$tokens_per_second,
-        response = content,
-        error = NULL
+    result <- tryCatch({
+      response <- httr::POST(
+        url,
+        body = jsonlite::toJSON(body, auto_unbox = TRUE, null = "null"),
+        httr::content_type_json(),
+        httr::timeout(timeout)
       )
-    } else {
+
+      elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+      status <- httr::status_code(response)
+
+      if (status == 200) {
+        content <- httr::content(response, as = "parsed", type = "application/json")
+        tokens <- extract_token_count(content)
+        timing <- extract_timing(content)
+
+        list(
+          success = TRUE,
+          tokens = tokens,
+          elapsed = elapsed,
+          tokens_per_second = timing$tokens_per_second,
+          response = content,
+          error = NULL,
+          endpoint = path
+        )
+      } else {
+        list(
+          success = FALSE,
+          tokens = 0,
+          elapsed = elapsed,
+          tokens_per_second = 0,
+          response = NULL,
+          error = paste("HTTP", status),
+          endpoint = path
+        )
+      }
+    }, error = function(e) {
+      elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
       list(
         success = FALSE,
         tokens = 0,
         elapsed = elapsed,
         tokens_per_second = 0,
         response = NULL,
-        error = paste("HTTP", httr::status_code(response))
+        error = as.character(e),
+        endpoint = path
       )
+    })
+
+    if (result$success) {
+      return(result)
     }
-  }, error = function(e) {
-    elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
-    list(
-      success = FALSE,
-      tokens = 0,
-      elapsed = elapsed,
-      tokens_per_second = 0,
-      response = NULL,
-      error = as.character(e)
-    )
-  })
+
+    last_error <- result
+
+    # Only fallback when it's a clear "not found"/"route missing" scenario
+    if (!grepl("404", result$error) && !grepl("HTTP 404", result$error)) {
+      # If error is other than 404, no point trying further endpoints
+      break
+    }
+  }
+
+  last_error
 }
 
 #' Send a completion request with retry logic
@@ -84,6 +133,7 @@ send_completion_with_retry <- function(base_url,
                                         n_predict = 50,
                                         temperature = 0.7,
                                         timeout = 120,
+                                        model = NULL,
                                         max_attempts = 3,
                                         base_sleep = 2) {
   retry_codes <- c("500", "502", "503", "504")
@@ -95,6 +145,7 @@ send_completion_with_retry <- function(base_url,
       prompt = prompt,
       n_predict = n_predict,
       temperature = temperature,
+      model = model,
       timeout = timeout
     )
 
@@ -134,13 +185,15 @@ run_single_test <- function(base_url,
                             prompt,
                             n_predict = 50,
                             temperature = 0.7,
-                            timeout = 120) {
+                            timeout = 120,
+                            model = NULL) {
   result <- send_completion_request(
     base_url = base_url,
     prompt = prompt,
     n_predict = n_predict,
     temperature = temperature,
-    timeout = timeout
+    timeout = timeout,
+    model = model
   )
 
   throughput <- if (result$elapsed > 0) result$tokens / result$elapsed else 0
@@ -173,6 +226,7 @@ run_concurrent_test <- function(base_url,
                                  concurrency = 4,
                                  num_requests = 16,
                                  timeout = 120,
+                                 model = NULL,
                                  retry_attempts = 3,
                                  retry_sleep = 2,
                                  progress_callback = NULL) {
@@ -193,6 +247,7 @@ run_concurrent_test <- function(base_url,
         prompt = prompt,
         n_predict = n_predict,
         temperature = temperature,
+        model = model,
         timeout = timeout,
         max_attempts = retry_attempts,
         base_sleep = retry_sleep
@@ -220,6 +275,7 @@ run_concurrent_test <- function(base_url,
           prompt = prompt,
           n_predict = n_predict,
           temperature = temperature,
+          model = model,
           timeout = timeout,
           max_attempts = retry_attempts,
           base_sleep = retry_sleep
@@ -270,7 +326,8 @@ run_warmup <- function(base_url,
                        prompt,
                        n_predict = 50,
                        num_warmup = 2,
-                       timeout = 120) {
+                       timeout = 120,
+                       model = NULL) {
   success_count <- 0
 
   for (i in seq_len(num_warmup)) {
@@ -278,7 +335,8 @@ run_warmup <- function(base_url,
       base_url = base_url,
       prompt = prompt,
       n_predict = n_predict,
-      timeout = timeout
+      timeout = timeout,
+      model = model
     )
 
     if (result$success) {
@@ -309,6 +367,7 @@ run_test_config <- function(base_url,
                             num_requests = NULL,
                             timeout = 120,
                             warmup = 2,
+                            model = NULL,
                             retry_attempts = 3,
                             retry_sleep = 2) {
   # Calculate num_requests if not provided
@@ -319,7 +378,7 @@ run_test_config <- function(base_url,
 
   # Run warmup
   if (warmup > 0) {
-    run_warmup(base_url, prompt, n_predict, warmup, timeout)
+    run_warmup(base_url, prompt, n_predict, warmup, timeout, model)
   }
 
   # Run actual test
@@ -331,6 +390,7 @@ run_test_config <- function(base_url,
     concurrency = concurrency,
     num_requests = num_requests,
     timeout = timeout,
+    model = model,
     retry_attempts = retry_attempts,
     retry_sleep = retry_sleep
   )

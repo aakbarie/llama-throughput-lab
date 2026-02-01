@@ -1,0 +1,2 @@
+"test_type","throughput_tps","total_tokens","elapsed_s","errors","concurrency","max_tokens","instances","parallel","batch","ubatch"
+"quick_benchmark",28.3579197687584,400,14.105406999588,0,4,50,1,1,NA,NA
