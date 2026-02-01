@@ -347,7 +347,16 @@ check_server_ready <- function(base_url, timeout = 5) {
 
   tryCatch({
     response <- httr::GET(url, httr::timeout(timeout))
-    httr::status_code(response) == 200
+    status <- httr::status_code(response)
+    if (status == 200) {
+      return(TRUE)
+    }
+    if (status == 404) {
+      fallback_url <- paste0(base_url, "/v1/models")
+      fallback_response <- httr::GET(fallback_url, httr::timeout(timeout))
+      return(httr::status_code(fallback_response) == 200)
+    }
+    FALSE
   }, error = function(e) FALSE)
 }
 
